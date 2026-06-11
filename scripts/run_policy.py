@@ -65,6 +65,44 @@ def run_policy(model_path, norm_path):
 
     env.close()
 
+def test_specific_target(model_path, norm_path, target):
+    print(f"\nTesting specific target: {target}")
+
+    env = make_vec_env(make_env, n_envs=1)
+    env = VecNormalize.load(norm_path, env)
+    env.training    = False
+    env.norm_reward = False
+
+    model = PPO.load(model_path, env=env)
+
+    # reset and manually override target position
+    obs = env.reset()
+    env.envs[0].env.env.target_pos = np.array(target, dtype=np.float32)
+
+    # rebuild obs with new target
+    obs = env.envs[0].env.env._get_obs()
+    obs = env.normalize_obs(obs.reshape(1, -1))
+
+    episode_reward = 0.0
+    done           = False
+
+    for step in range(1000):
+        action, _ = model.predict(obs, deterministic=True)
+        obs, reward, done, info = env.step(action)
+        episode_reward += reward[0]
+
+        if done[0]:
+            real_info = info[0]
+            result    = "SUCCESS" if real_info.get("is_success") else "FAILED"
+            print(f"Result   : {result}")
+            print(f"Distance : {real_info['distance']:.4f}m")
+            print(f"Reward   : {episode_reward:.2f}")
+            print(f"Steps    : {step+1}")
+
+            break
+
+    env.close()
+
 if __name__ == "__main__":
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -75,4 +113,9 @@ if __name__ == "__main__":
         base, "models", "trained", "best", "vec_normalize.pkl"
     )
 
+    # test three specific targets
+    test_specific_target(model_path, norm_path, [0.35, 0.0,  0.45])   # center
+    test_specific_target(model_path, norm_path, [0.45, 0.15, 0.50])   # right and up
+    test_specific_target(model_path, norm_path, [0.25, -0.1, 0.35])   # left and down
+    
     run_policy(model_path, norm_path)
