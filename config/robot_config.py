@@ -37,10 +37,16 @@ JOINT_LIMITS = [
 END_EFFECTOR_BODY = "fr3_hand"
 
 # RL environment settings
-MAX_EPISODE_STEPS = 1000    # max steps before episode ends
-GOAL_THRESHOLD    = 0.05    # meters — how close counts as success
-REWARD_SCALE      = 1.0     # scale factor for rewards
+MAX_EPISODE_STEPS = 1000
+GOAL_THRESHOLD    = 0.05
+REWARD_SCALE      = 1.0
 
-# tighter target bounds — closer to home pose, definitely reachable
-TARGET_LOW  = [ 0.25, -0.25, 0.35]
-TARGET_HIGH = [ 0.45,  0.25, 0.55]
+# wider target bounds — full reachable workspace
+TARGET_LOW  = [ 0.2, -0.4, 0.3]
+TARGET_HIGH = [ 0.6,  0.4, 0.7]
+
+# curriculum learning settings
+# targets start close to home, gradually spread to full workspace
+CURRICULUM_START_RADIUS = 0.1    # meters — easy targets at start
+CURRICULUM_END_RADIUS   = 0.4    # meters — full workspace at end
+CURRICULUM_STEPS        = 500_000  # steps until full difficulty reached

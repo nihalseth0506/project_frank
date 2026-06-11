@@ -3,7 +3,6 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from robot.controller    import RobotController
 from robot.observer      import RobotObserver
 from config.robot_config import (
     MODEL_PATH,
@@ -15,41 +14,31 @@ from config.robot_config import (
     TARGET_HIGH,
     HOME_POSE,
     END_EFFECTOR_BODY,
-    DEFAULT_MOVE_STEPS
+    DEFAULT_MOVE_STEPS,
+    CURRICULUM_START_RADIUS,
+    CURRICULUM_END_RADIUS,
+    CURRICULUM_STEPS
 )
 
 
 class FrankReachEnv(gym.Env):
-    # tells gymnasium this environment supports rgb rendering
     metadata = {"render_modes": ["human"]}
 
     def __init__(self, render_mode=None):
         super().__init__()
-        self.render_mode  = render_mode
-        self.render_mode  = render_mode
+        self.render_mode = render_mode
 
-        # load model and data directly here
-        # we dont use RobotController.run() in RL
-        # we need manual control of every step
-        self.model = mujoco.MjModel.from_xml_path(MODEL_PATH)
-        self.data  = mujoco.MjData(self.model)
-
-        # observer handles all state reading
+        self.model    = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        self.data     = mujoco.MjData(self.model)
         self.observer = RobotObserver(self.model, self.data)
+        self.viewer   = None
 
-        # viewer is only created if render_mode is human
-        self.viewer = None
-
-        # track steps within current episode
         self.current_step = 0
-
-        # target position in 3D space — randomized each episode
-        self.target_pos = np.zeros(3)
+        self.total_steps  = 0    # tracks steps across all episodes for curriculum
+        self.target_pos   = np.zeros(3)
 
         # delta action space — small changes per step
-        # limits how much each joint can move per step
-        # prevents violent jumpy motion
-        DELTA_LIMIT = 0.1  # radians per step maximum
+        DELTA_LIMIT = 0.1   # max radians per joint per step
 
         self.action_space = spaces.Box(
             low   = -DELTA_LIMIT * np.ones(7, dtype=np.float32),
@@ -57,10 +46,7 @@ class FrankReachEnv(gym.Env):
             dtype = np.float32
         )
 
-        # --- define observation space ---
-        # what the agent sees each step:
-        # 7 joint positions + 7 joint velocities + 3 end effector pos
-        # + 3 target position = 20 numbers total
+        # observation: 7 joint pos + 7 joint vel + 3 ee pos + 3 target = 20
         self.observation_space = spaces.Box(
             low   = -np.inf,
             high  =  np.inf,
@@ -68,77 +54,90 @@ class FrankReachEnv(gym.Env):
             dtype = np.float32
         )
 
+    def _get_curriculum_radius(self):
+        # linearly increase difficulty as training progresses
+        # at total_steps=0          → radius = 0.1m  (easy)
+        # at total_steps=500k       → radius = 0.4m  (full workspace)
+        # at total_steps=500k+      → radius = 0.4m  (stays at max)
+        progress = min(self.total_steps / CURRICULUM_STEPS, 1.0)
+        radius   = (CURRICULUM_START_RADIUS +
+                    progress * (CURRICULUM_END_RADIUS - CURRICULUM_START_RADIUS))
+
+        return radius
+
     def _get_obs(self):
-        # build the 20-dimensional observation vector
         obs_dict = self.observer.get_observation(END_EFFECTOR_BODY)
 
         return np.concatenate([
-            obs_dict["joint_positions"],    # 7 numbers
-            obs_dict["joint_velocities"],   # 7 numbers
-            obs_dict["end_effector_pos"],   # 3 numbers
-            self.target_pos                 # 3 numbers
-        ]).astype(np.float32)              # total = 20
+            obs_dict["joint_positions"],   # [0:7]   joint angles
+            obs_dict["joint_velocities"],  # [7:14]  joint velocities
+            obs_dict["end_effector_pos"],  # [14:17] ee xyz in world frame
+            self.target_pos                # [17:20] target xyz in world frame
+        ]).astype(np.float32)
 
     def _get_distance(self):
-        # euclidean distance between end effector and target
         ee_pos = self.observer.get_end_effector_pos(END_EFFECTOR_BODY)
 
-        return np.linalg.norm(ee_pos - self.target_pos)
+        return float(np.linalg.norm(ee_pos - self.target_pos))
 
     def _compute_reward(self, distance):
-        # simple dense reward — easy gradient for agent to follow
-        # shaped to give stronger signal near the goal
+        # dense reward — negative distance gives gradient every step
         reward = -distance
 
-        # success bonus
+        # bonus for getting close — encourages precision
+        if distance < 0.1:
+            reward += 1.0
+
+        # large bonus for success — clearly marks the goal
         if distance < GOAL_THRESHOLD:
             reward += 10.0
 
         return reward
 
     def reset(self, seed=None, options=None):
-        # required by gymnasium — handles random seed
         super().reset(seed=seed)
 
-        # reset simulation to initial state
         mujoco.mj_resetData(self.model, self.data)
-
-        # move to home pose so robot starts consistently
         self._move_to_home()
 
-        # spawn target at a random position within bounds
-        self.target_pos = np.random.uniform(
-            low  = TARGET_LOW,
-            high = TARGET_HIGH
-        )
+        # get home end effector position as curriculum center
+        home_ee = self.observer.get_end_effector_pos(END_EFFECTOR_BODY)
+        radius  = self._get_curriculum_radius()
 
-        # reset step counter for this episode
+        # sample target within current curriculum radius
+        # retry until target is within safe reachable bounds
+        while True:
+            offset = np.random.uniform(-radius, radius, size=3)
+            target = home_ee + offset
+
+            if (TARGET_LOW[0]  <= target[0] <= TARGET_HIGH[0] and
+                TARGET_LOW[1]  <= target[1] <= TARGET_HIGH[1] and
+                TARGET_LOW[2]  <= target[2] <= TARGET_HIGH[2]):
+                break
+
+        self.target_pos   = target
         self.current_step = 0
 
-        obs  = self._get_obs()
-        info = {}
-
-        return obs, info
+        return self._get_obs(), {}
 
     def step(self, action):
-        # action is now a delta — add to current joint positions
+        # apply delta to current joint positions
         current_angles = self.data.qpos[:7].copy()
         new_angles     = current_angles + action
 
-        # clip to joint limits so delta never exceeds physical bounds
+        # clip to joint limits
         for i in range(7):
-            low  = self.model.jnt_range[i][0]
-            high = self.model.jnt_range[i][1]
+            low          = self.model.jnt_range[i][0]
+            high         = self.model.jnt_range[i][1]
             new_angles[i] = np.clip(new_angles[i], low, high)
 
-        # apply clipped angles
         self.data.ctrl[:7] = new_angles
-
-        # advance physics
         mujoco.mj_step(self.model, self.data)
-        self.current_step += 1
 
-        # get observation and compute reward
+        # increment both step counters
+        self.current_step += 1
+        self.total_steps  += 1
+
         obs      = self._get_obs()
         distance = self._get_distance()
         reward   = self._compute_reward(distance)
@@ -147,9 +146,10 @@ class FrankReachEnv(gym.Env):
         truncated  = bool(self.current_step >= MAX_EPISODE_STEPS)
 
         info = {
-            "distance"  : distance,
-            "target_pos": self.target_pos,
-            "is_success": terminated
+            "distance"          : distance,
+            "target_pos"        : self.target_pos,
+            "is_success"        : terminated,
+            "curriculum_radius" : self._get_curriculum_radius()
         }
 
         if self.render_mode == "human":
@@ -158,14 +158,12 @@ class FrankReachEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def _move_to_home(self):
-        # move robot to home pose without rendering
-        # used during reset to ensure consistent start state
-        start = self.data.qpos[:7].copy()
+        start  = self.data.qpos[:7].copy()
         target = np.array(HOME_POSE)
 
         for step in range(DEFAULT_MOVE_STEPS):
-            t             = step / DEFAULT_MOVE_STEPS
-            interpolated  = start + t * (target - start)
+            t              = step / DEFAULT_MOVE_STEPS
+            interpolated   = start + t * (target - start)
             self.data.ctrl[:7] = interpolated
             mujoco.mj_step(self.model, self.data)
 

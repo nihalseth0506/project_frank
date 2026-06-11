@@ -76,41 +76,31 @@ def train():
 
     # --- define the PPO agent ---
     model = PPO(
-        policy  = "MlpPolicy",   # multi-layer perceptron — standard for state-based RL
-        env     = train_env,
-        verbose = 1,             # print training progress
-
-        # --- core PPO hyperparameters ---
-        learning_rate = 3e-4,    # how fast weights update — 0.0003
-        n_steps       = 2048,    # steps collected before each weight update
-        batch_size    = 64,      # samples per gradient update
-        n_epochs      = 10,      # passes through collected data per update
-        gamma         = 0.99,    # discount factor — how much future rewards matter
-        gae_lambda    = 0.95,    # advantage estimation smoothing
-
-        # entropy coefficient — forces agent to keep exploring
-        # prevents the collapse we saw in v1
-        ent_coef      = 0.01,
-
-        # --- network architecture ---
+        policy        = "MlpPolicy",
+        env           = train_env,
+        verbose       = 1,
+        learning_rate = 1e-4,      # reduced from 3e-4 — prevents divergence
+        n_steps       = 2048,
+        batch_size    = 64,
+        n_epochs      = 10,
+        gamma         = 0.99,
+        gae_lambda    = 0.95,
+        ent_coef      = 0.01,      # keeps exploration alive
         policy_kwargs = dict(
-            net_arch = [256, 256]  # two hidden layers of 256 neurons each
+            net_arch = [256, 256]
         ),
-
         tensorboard_log = LOGS_DIR
     )
 
-    print(f"\nPolicy network architecture: 20 → 256 → 256 → 7")
-    print(f"Total training timesteps   : 300,000")
-    print(f"Checkpoints saved to       : {MODELS_DIR}")
-    print(f"Logs saved to              : {LOGS_DIR}")
-    print(f"\nStarting training...\n")
+    print(f"\nPolicy network: 20 → 256 → 256 → 7")
+    print(f"Training steps : 1,000,000")
+    print(f"Learning rate  : 1e-4")
+    print(f"Curriculum     : radius 0.1m → 0.4m over 500k steps\n")
 
-    # --- train ---
     model.learn(
-        total_timesteps    = 1000_000,
-        callback           = [checkpoint_callback, eval_callback],
-        progress_bar       = True
+        total_timesteps = 1_000_000,
+        callback        = [checkpoint_callback, eval_callback],
+        progress_bar    = True
     )
 
     # --- save final policy ---
