@@ -100,22 +100,16 @@ class FrankReachEnv(gym.Env):
         mujoco.mj_resetData(self.model, self.data)
         self._move_to_home()
 
-        # get home end effector position as curriculum center
-        home_ee = self.observer.get_end_effector_pos(END_EFFECTOR_BODY)
-        radius  = self._get_curriculum_radius()
+        radius = self._get_curriculum_radius()
 
-        # sample target within current curriculum radius
-        # retry until target is within safe reachable bounds
-        while True:
-            offset = np.random.uniform(-radius, radius, size=3)
-            target = home_ee + offset
+        # fixed reachable center point — curriculum expands outward from here
+        # chosen to be within TARGET bounds and reachable by FR3
+        center = np.array([0.35, 0.0, 0.45])
 
-            if (TARGET_LOW[0]  <= target[0] <= TARGET_HIGH[0] and
-                TARGET_LOW[1]  <= target[1] <= TARGET_HIGH[1] and
-                TARGET_LOW[2]  <= target[2] <= TARGET_HIGH[2]):
-                break
+        low  = np.maximum(center - radius, TARGET_LOW)
+        high = np.minimum(center + radius, TARGET_HIGH)
 
-        self.target_pos   = target
+        self.target_pos   = np.random.uniform(low, high).astype(np.float32)
         self.current_step = 0
 
         return self._get_obs(), {}
@@ -158,14 +152,14 @@ class FrankReachEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def _move_to_home(self):
-        start  = self.data.qpos[:7].copy()
-        target = np.array(HOME_POSE)
+        # directly set joint positions instead of stepping through motion
+        # this avoids polluting the value function with uncontrolled motion
+        self.data.qpos[:7] = np.array(HOME_POSE)
+        self.data.qvel[:7] = 0.0   # zero velocity
+        self.data.ctrl[:7] = np.array(HOME_POSE)
 
-        for step in range(DEFAULT_MOVE_STEPS):
-            t              = step / DEFAULT_MOVE_STEPS
-            interpolated   = start + t * (target - start)
-            self.data.ctrl[:7] = interpolated
-            mujoco.mj_step(self.model, self.data)
+        # forward kinematics to update all body positions
+        mujoco.mj_forward(self.model, self.data)
 
     def render(self):
         if self.viewer is None:

@@ -11,6 +11,7 @@ from stable_baselines3.common.callbacks import (
     CheckpointCallback
 )
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import VecNormalize
 
 from environment.reach_env import FrankReachEnv
 
@@ -31,8 +32,6 @@ os.makedirs(LOGS_DIR,   exist_ok=True)
 
 
 def make_env():
-    # creates one training environment instance
-    # Monitor wrapper logs episode rewards and lengths automatically
     env = FrankReachEnv(render_mode=None)
 
     return Monitor(env)
@@ -45,25 +44,38 @@ def train():
     print("=" * 50)
 
     # --- create vectorized training environment ---
-    # n_envs=1 for now — your laptop runs one env comfortably
-    # later we can increase this for faster training
     train_env = make_vec_env(make_env, n_envs=1)
 
+    # wrap with observation and reward normalization
+    # scales all observations to mean=0 std=1 automatically
+    # makes training stable across differently-scaled observation values
+    train_env = VecNormalize(
+        train_env,
+        norm_obs    = True,
+        norm_reward = True,
+        clip_obs    = 10.0
+    )
+
     # --- create separate evaluation environment ---
-    # we evaluate on a separate env so training isn't interrupted
-    eval_env = Monitor(FrankReachEnv(render_mode=None))
+    # eval env also needs normalization wrapper
+    # but with training=False so stats don't update during eval
+    eval_env = make_vec_env(make_env, n_envs=1)
+    eval_env = VecNormalize(
+        eval_env,
+        norm_obs    = True,
+        norm_reward = False,   # don't normalize reward during eval
+        clip_obs    = 10.0,
+        training    = False    # don't update running stats during eval
+    )
 
     # --- checkpoint callback ---
-    # saves policy weights every 10000 steps
     checkpoint_callback = CheckpointCallback(
-        save_freq  = 10_000,
-        save_path  = MODELS_DIR,
+        save_freq   = 10_000,
+        save_path   = MODELS_DIR,
         name_prefix = "frank_reach_ppo"
     )
 
     # --- eval callback ---
-    # runs 10 evaluation episodes every 5000 steps
-    # saves the best policy found so far
     eval_callback = EvalCallback(
         eval_env,
         best_model_save_path = os.path.join(MODELS_DIR, "best"),
@@ -79,22 +91,24 @@ def train():
         policy        = "MlpPolicy",
         env           = train_env,
         verbose       = 1,
-        learning_rate = 1e-4,      # reduced from 3e-4 — prevents divergence
+        learning_rate = 1e-4,
         n_steps       = 2048,
         batch_size    = 64,
         n_epochs      = 10,
         gamma         = 0.99,
         gae_lambda    = 0.95,
-        ent_coef      = 0.01,      # keeps exploration alive
+        ent_coef      = 0.05,   # increased from 0.01 — forces more exploration
         policy_kwargs = dict(
             net_arch = [256, 256]
         ),
         tensorboard_log = LOGS_DIR
     )
 
-    print(f"\nPolicy network: 20 → 256 → 256 → 7")
+    print(f"\nPolicy network : 20 → 256 → 256 → 7")
     print(f"Training steps : 1,000,000")
     print(f"Learning rate  : 1e-4")
+    print(f"Entropy coef   : 0.05")
+    print(f"Obs normalized : True")
     print(f"Curriculum     : radius 0.1m → 0.4m over 500k steps\n")
 
     model.learn(
@@ -103,10 +117,17 @@ def train():
         progress_bar    = True
     )
 
-    # --- save final policy ---
+    # --- save final policy and normalization stats ---
     final_path = os.path.join(MODELS_DIR, "frank_reach_ppo_final")
     model.save(final_path)
-    print(f"\nTraining complete. Final policy saved to: {final_path}")
+
+    # save normalization stats — required when loading policy later
+    # without this the loaded policy sees wrong observation scale
+    train_env.save(os.path.join(MODELS_DIR, "vec_normalize.pkl"))
+
+    print(f"\nTraining complete.")
+    print(f"Policy saved to       : {final_path}")
+    print(f"Norm stats saved to   : {MODELS_DIR}/vec_normalize.pkl")
 
     train_env.close()
     eval_env.close()
