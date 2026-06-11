@@ -49,7 +49,7 @@ class FrankReachEnv(gym.Env):
         # delta action space — small changes per step
         # limits how much each joint can move per step
         # prevents violent jumpy motion
-        DELTA_LIMIT = 0.05  # radians per step maximum
+        DELTA_LIMIT = 0.1  # radians per step maximum
 
         self.action_space = spaces.Box(
             low   = -DELTA_LIMIT * np.ones(7, dtype=np.float32),
@@ -86,14 +86,11 @@ class FrankReachEnv(gym.Env):
         return np.linalg.norm(ee_pos - self.target_pos)
 
     def _compute_reward(self, distance):
-        # dense distance reward
-        reward = -distance * REWARD_SCALE
+        # simple dense reward — easy gradient for agent to follow
+        # shaped to give stronger signal near the goal
+        reward = -distance
 
-        # bonus for getting very close — encourages final precision
-        if distance < 0.1:
-            reward += 1.0
-
-        # big bonus for success — encourages actually reaching the goal
+        # success bonus
         if distance < GOAL_THRESHOLD:
             reward += 10.0
 

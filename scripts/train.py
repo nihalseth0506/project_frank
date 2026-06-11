@@ -88,6 +88,10 @@ def train():
         gamma         = 0.99,    # discount factor — how much future rewards matter
         gae_lambda    = 0.95,    # advantage estimation smoothing
 
+        # entropy coefficient — forces agent to keep exploring
+        # prevents the collapse we saw in v1
+        ent_coef      = 0.01,
+
         # --- network architecture ---
         policy_kwargs = dict(
             net_arch = [256, 256]  # two hidden layers of 256 neurons each
@@ -104,7 +108,7 @@ def train():
 
     # --- train ---
     model.learn(
-        total_timesteps    = 300_000,
+        total_timesteps    = 500_000,
         callback           = [checkpoint_callback, eval_callback],
         progress_bar       = True
     )
