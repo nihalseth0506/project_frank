@@ -38,7 +38,7 @@ END_EFFECTOR_BODY = "fr3_hand"
 
 # RL environment settings
 MAX_EPISODE_STEPS = 1000
-GOAL_THRESHOLD    = 0.15
+GOAL_THRESHOLD    = 0.08
 REWARD_SCALE      = 1.0
 
 # wider target bounds — full reachable workspace
