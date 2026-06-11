@@ -35,3 +35,12 @@ JOINT_LIMITS = [
 
 # end effector body name in the FR3 model XML
 END_EFFECTOR_BODY = "fr3_hand"
+
+# RL environment settings
+MAX_EPISODE_STEPS = 500    # max steps before episode ends
+GOAL_THRESHOLD    = 0.05    # meters — how close counts as success
+REWARD_SCALE      = 10.0     # scale factor for rewards
+
+# target position bounds — random goal spawns within this box
+TARGET_LOW  = [ 0.2, -0.4,  0.2]   # [x_min, y_min, z_min] in meters
+TARGET_HIGH = [ 0.6,  0.4,  0.6]   # [x_max, y_max, z_max] in meters
