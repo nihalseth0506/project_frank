@@ -17,20 +17,22 @@ def make_env():
 
 
 def run_policy(model_path, norm_path):
-    print(f"Loading policy: {model_path}")
+    print(f"Loading policy    : {model_path}")
+    print(f"Loading norm stats: {norm_path}")
 
-    # create env without normalization wrapper
-    # norm stats were not saved — running without them
     env = make_vec_env(make_env, n_envs=1)
+    env = VecNormalize.load(norm_path, env)
+    env.training    = False
+    env.norm_reward = False
 
     model = PPO.load(model_path, env=env)
 
-    obs = env.reset()
+    obs            = env.reset()
     episode        = 0
     total_success  = 0
     episode_reward = 0.0
 
-    print(f"\nRunning 20 episodes. Close viewer to stop early.\n")
+    print(f"\nRunning 20 episodes.\n")
 
     while episode < 20:
         action, _ = model.predict(obs, deterministic=True)
@@ -54,18 +56,23 @@ def run_policy(model_path, norm_path):
             episode       += 1
             episode_reward = 0.0
 
-    print(f"\nFinal result: {total_success}/20 = "
+        if env.envs[0].env.env.viewer is not None:
+            if not env.envs[0].env.env.viewer.is_running():
+                break
+
+    print(f"\nFinal: {total_success}/20 = "
           f"{total_success/20*100:.1f}% success rate")
 
     env.close()
-
 
 if __name__ == "__main__":
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     model_path = os.path.join(
-        base, "models", "trained_v4_normalized", "best", "best_model"
+        base, "models", "trained", "best", "best_model"
+    )
+    norm_path = os.path.join(
+        base, "models", "trained", "best", "vec_normalize.pkl"
     )
 
-    # norm_path not used — running without normalization
-    run_policy(model_path, norm_path=None)
+    run_policy(model_path, norm_path)
