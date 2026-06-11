@@ -82,14 +82,17 @@ class FrankReachEnv(gym.Env):
         return float(np.linalg.norm(ee_pos - self.target_pos))
 
     def _compute_reward(self, distance):
-        # dense reward — negative distance gives gradient every step
         reward = -distance
 
-        # bonus for getting close — encourages precision
-        if distance < 0.1:
-            reward += 1.0
+        if distance < 0.20:
+            reward += 0.5
 
-        # large bonus for success — clearly marks the goal
+        if distance < 0.10:
+            reward += 2.0
+
+        if distance < 0.05:
+            reward += 5.0
+
         if distance < GOAL_THRESHOLD:
             reward += 10.0
 
