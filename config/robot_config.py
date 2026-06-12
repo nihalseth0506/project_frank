@@ -50,3 +50,7 @@ TARGET_HIGH = [ 0.6,  0.4, 0.7]
 CURRICULUM_START_RADIUS = 0.1    # meters — easy targets at start
 CURRICULUM_END_RADIUS   = 0.4    # meters — full workspace at end
 CURRICULUM_STEPS        = 500_000  # steps until full difficulty reached
+
+# curriculum center point — targets expand outward from here
+# chosen to be a comfortable reachable position for FR3 from home pose
+CURRICULUM_CENTER = [0.35, 0.0, 0.50]   # raised z slightly from 0.45

@@ -4,7 +4,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from robot.observer      import RobotObserver
+from robot.observer import RobotObserver
 from config.robot_config import (
     MODEL_PATH,
     TIMESTEP,
