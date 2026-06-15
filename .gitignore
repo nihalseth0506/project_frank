@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.vscode/
+*.egg-info/
+dist/
+build/
+models/mujoco_menagerie-main/
+models/reach/
+models/pick_place/
+logs/
+logs_pick_place/
+logs_v8/
+*.zip
+*.pkl
