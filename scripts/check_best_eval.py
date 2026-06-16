@@ -57,5 +57,5 @@ def check_best_eval(logs_dir):
 
 if __name__ == "__main__":
     base     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    logs_dir = os.path.join(base, "logs", "reach")
+    logs_dir = os.path.join(base, "logs", "reach_panda","v1")
     check_best_eval(logs_dir)
