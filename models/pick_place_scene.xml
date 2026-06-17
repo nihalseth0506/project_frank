@@ -157,15 +157,15 @@
 
     <!-- table — surface at z=0.4 matching robot base height -->
     <geom name="table_surface" type="box" size="0.40 0.35 0.018"
-          pos="0.52 0 0.382" material="table_mat"/>
-    <geom name="table_leg_fl"  type="box" size="0.025 0.025 0.18"
-          pos="0.18 0.30 0.19"  material="platform_mat"/>
-    <geom name="table_leg_fr"  type="box" size="0.025 0.025 0.18"
-          pos="0.86 0.30 0.19"  material="platform_mat"/>
-    <geom name="table_leg_bl"  type="box" size="0.025 0.025 0.18"
-          pos="0.18 -0.30 0.19" material="platform_mat"/>
-    <geom name="table_leg_br"  type="box" size="0.025 0.025 0.18"
-          pos="0.86 -0.30 0.19" material="platform_mat"/>
+          pos="0.52 0 0.512" material="table_mat"/>
+    <geom name="table_leg_fl"  type="box" size="0.025 0.025 0.247"
+          pos="0.18 0.30 0.247"  material="platform_mat"/>
+    <geom name="table_leg_fr"  type="box" size="0.025 0.025 0.247"
+          pos="0.86 0.30 0.247"  material="platform_mat"/>
+    <geom name="table_leg_bl"  type="box" size="0.025 0.025 0.247"
+          pos="0.18 -0.30 0.247" material="platform_mat"/>
+    <geom name="table_leg_br"  type="box" size="0.025 0.025 0.247"
+          pos="0.86 -0.30 0.247" material="platform_mat"/>
 
     <!-- ===== PANDA ROBOT (arm + hand) ===== -->
     <!-- robot base at z=0.4, same height as table surface -->
@@ -320,8 +320,8 @@
     </body>
 
     <!-- ===== CUBE OBJECT ===== -->
-    <!-- starts on table surface, z=0.4 (table) + 0.025 (half cube height) -->
-    <body name="object" pos="0.4 0.1 0.425">
+    <!-- starts on table surface, z=0.53 (table) + 0.025 (half cube height) -->
+    <body name="object" pos="0.4 0.1 0.555">
       <freejoint name="object_joint"/>
       <geom name="object_geom" type="box" size="0.02 0.02 0.025"
             material="object_mat"
@@ -334,7 +334,7 @@
 
     <!-- ===== TARGET ZONE ===== -->
     <!-- flat marker on table showing where to place the cube -->
-    <body name="target_indicator" pos="0.45 -0.2 0.401">
+    <body name="target_indicator" pos="0.45 -0.2 0.531">
       <geom name="target_geom" type="box" size="0.035 0.035 0.001"
             material="target_mat" contype="0" conaffinity="0"/>
     </body>

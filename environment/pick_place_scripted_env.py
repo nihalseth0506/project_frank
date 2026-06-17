@@ -41,9 +41,9 @@ def _find_latest_panda_reach():
     return os.path.join(best, "best_model"), os.path.join(best, "vec_normalize.pkl")
 
 
-TABLE_Z     = 0.400
+TABLE_Z     = 0.530
 CUBE_HALF_H = 0.025
-CUBE_Z      = TABLE_Z + CUBE_HALF_H   # 0.425
+CUBE_Z      = TABLE_Z + CUBE_HALF_H   # 0.555
 
 ABOVE_HEIGHT = 0.15
 LIFT_HEIGHT  = 0.14
@@ -104,7 +104,7 @@ class ScriptedPickPlace:
         model           = PPO.load(model_path, env=env, device="cpu")
         return env, model
 
-    def _reach_step(self, target_xyz):
+    def _reach_step(self, target_xyz, constrain_orientation=True):
         obs = np.concatenate([
             self.data.qpos[:7].copy(),
             self.data.qvel[:7].copy(),
@@ -116,9 +116,12 @@ class ScriptedPickPlace:
         action, _ = self._reach_model.predict(obs_norm, deterministic=True)
         deltas    = action[0][:7].astype(np.float64)
 
-        current    = self.data.ctrl[:7].copy()
-        new_arm    = current + deltas
-        new_arm[6] = np.clip(new_arm[6], -0.3, 0.3)
+        current = self.data.ctrl[:7].copy()
+        new_arm = current + deltas
+
+        if constrain_orientation:
+            new_arm[5] = np.clip(new_arm[5], 1.70, 2.10)
+            new_arm[6] = np.clip(new_arm[6], -0.2, 0.2)
 
         for i in range(7):
             new_arm[i] = np.clip(
@@ -144,14 +147,14 @@ class ScriptedPickPlace:
 
     def _is_grasped(self):
         dist    = np.linalg.norm(self._get_pinch() - self._get_object_pos())
-        closing = self.data.ctrl[7] >= 100.0
-        return bool(dist < 0.10 and closing)
+        closing = self.data.ctrl[7] <= 50.0   # ← 0 = closed, so check <= 50
+        return bool(dist < 0.15 and closing)
 
     def _open_gripper(self):
-        self.data.ctrl[7] = 0.0
+        self.data.ctrl[7] = 255.0
 
     def _close_gripper(self):
-        self.data.ctrl[7] = 255.0
+        self.data.ctrl[7] = 0.0
 
     def _step(self):
         for _ in range(5):
@@ -208,14 +211,14 @@ class ScriptedPickPlace:
                 tgt    = self.object_pos.copy()
                 tgt[2] = CUBE_Z + ABOVE_HEIGHT
 
-                self._reach_step(tgt)
+                self._reach_step(tgt, constrain_orientation=False)
                 self._open_gripper()
 
                 pinch   = self._get_pinch()
                 dist_xy = np.linalg.norm(pinch[:2] - tgt[:2])
                 dist_z  = abs(pinch[2] - tgt[2])
 
-                if dist_xy < 0.07 and dist_z < 0.06:
+                if dist_xy < 0.05 and dist_z < 0.06:
                     print(f"  ✓ APPROACH — pinch {pinch.round(3)}")
                     self.stage = 1; self.stage_step = 0
                 elif self.stage_step >= max_steps:
@@ -225,42 +228,51 @@ class ScriptedPickPlace:
             # ── STAGE 1: descend incrementally to cube ────────────────────
             elif self.stage == 1:
                 self.object_pos = self._get_object_pos().copy()
-                pinch           = self._get_pinch()          # read FIRST
-                target_z        = self.object_pos[2] + 0.03  # 3cm above cube top
+                pinch           = self._get_pinch()
+
+                # fingers are 0.117m above pinch site
+                # to get fingers at cube top (0.450), pinch needs to be at 0.333
+                # but arm minimum is ~0.38, so target just as low as possible
+                FINGER_OFFSET = 0.117
+                finger_target_z = self.object_pos[2] + 0.02   # 2cm above cube top
+                pinch_target_z  = finger_target_z - FINGER_OFFSET   # 0.307
 
                 tgt    = self.object_pos.copy()
-                tgt[2] = max(target_z, pinch[2] - 0.02)     # step down 2cm max
+                tgt[2] = max(pinch_target_z, pinch[2] - 0.02)
 
-                self._reach_step(tgt)
+                self._reach_step(tgt, constrain_orientation=False)  # no joint constraint
                 self._open_gripper()
+                
+                pinch      = self._get_pinch()
+                finger_z   = pinch[2] + FINGER_OFFSET
+                dist_xy    = np.linalg.norm(pinch[:2] - self.object_pos[:2])
 
-                pinch   = self._get_pinch()                  # read AFTER step
-                z_err   = pinch[2] - target_z
-                dist_xy = np.linalg.norm(pinch[:2] - self.object_pos[:2])
+                print(f"    descend: finger z={finger_z:.3f} "
+                    f"cube z={self.object_pos[2]:.3f} xy={dist_xy:.3f}")
 
-                print(f"    descend: pinch z={pinch[2]:.3f} "
-                      f"target z={target_z:.3f} xy={dist_xy:.3f}")
-
-                if z_err < 0.03 and dist_xy < 0.07:
-                    print(f"  ✓ DESCEND — pinch {pinch.round(3)}")
+                # success when fingers are within 3cm of cube top AND xy aligned
+                if finger_z < self.object_pos[2] + 0.08 and dist_xy < 0.07:
+                    print(f"  ✓ DESCEND — finger z={finger_z:.3f}")
                     self.stage = 2; self.stage_step = 0
                 elif self.stage_step >= max_steps:
-                    print(f"  ✗ DESCEND timeout — pinch z={pinch[2]:.3f} "
-                          f"target z={target_z:.3f}")
+                    print(f"  ✗ DESCEND timeout — finger z={finger_z:.3f}")
                     break
 
             # ── STAGE 2: grasp ─────────────────────────────────────────────
+            # STAGE 2: grasp — keep arm still, just close gripper
             elif self.stage == 2:
                 self._close_gripper()
                 self._step()
 
-                if self.stage_step >= 150:
-                    grasped      = self._is_grasped()
+                if self.stage_step >= 200:
+                    grasped     = self._is_grasped()
                     grasp_tries += 1
-                    ee_to_cube   = np.linalg.norm(
+                    ee_to_cube  = np.linalg.norm(
                         self._get_pinch() - self._get_object_pos())
-                    print(f"  Grasp try {grasp_tries}: {grasped} "
-                          f"(pinch→cube={ee_to_cube:.3f}m)")
+                    cube_h = self._get_object_pos()[2] - TABLE_Z
+
+                    print(f"  Grasp try {grasp_tries}: grasped={grasped} "
+                        f"pinch→cube={ee_to_cube:.3f}m cube_h={cube_h:.4f}m")
 
                     if grasped:
                         print(f"  ✓ GRASP — cube held")
@@ -268,17 +280,26 @@ class ScriptedPickPlace:
                     elif grasp_tries < 3:
                         self.stage = 1; self.stage_step = 0
                     else:
-                        print(f"  ✗ GRASP failed")
+                        print(f"  ✗ GRASP failed after {grasp_tries} tries")
                         break
 
             # ── STAGE 3: lift ──────────────────────────────────────────────
             elif self.stage == 3:
-                pinch = self._get_pinch()
-                tgt   = np.array([pinch[0], pinch[1], TABLE_Z + LIFT_HEIGHT])
-                self._reach_step(tgt)
+                # freeze all joints except shoulder — lift by adjusting joint 2
+                current = self.data.qpos[:7].copy()
+                current[1] = current[1] - 0.003   # joint2 negative = arm lifts for Panda
+                for i in range(7):
+                    current[i] = np.clip(
+                        current[i],
+                        self.model.actuator_ctrlrange[i, 0],
+                        self.model.actuator_ctrlrange[i, 1]
+                    )
+                self.data.ctrl[:7] = current
                 self._close_gripper()
+                self._step()
 
                 cube_h = self._get_object_pos()[2] - TABLE_Z
+                print(f"    lift: cube_h={cube_h:.3f}")
 
                 if cube_h > LIFT_HEIGHT - 0.04:
                     print(f"  ✓ LIFT — height {cube_h:.3f}m")
@@ -295,7 +316,7 @@ class ScriptedPickPlace:
             elif self.stage == 4:
                 tgt    = self.target_pos.copy()
                 tgt[2] = TABLE_Z + PLACE_HEIGHT
-                self._reach_step(tgt)
+                self._reach_step(tgt, constrain_orientation=False)
                 self._close_gripper()
 
                 pinch   = self._get_pinch()

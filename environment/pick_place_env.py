@@ -11,9 +11,9 @@ _PROJ_ROOT = os.path.dirname(_HERE)
 SCENE_PATH = os.path.join(_PROJ_ROOT, "models", "pick_place_scene.xml")
 
 # ── task constants ─────────────────────────────────────────────────────────────
-TABLE_Z          = 0.400   # table surface height in world frame
-CUBE_HALF_H      = 0.025   # half cube height (size z in XML)
-CUBE_Z           = TABLE_Z + CUBE_HALF_H          # 0.425 — cube resting z
+TABLE_Z     = 0.530
+CUBE_HALF_H = 0.025
+CUBE_Z      = TABLE_Z + CUBE_HALF_H   # 0.555
 
 # object spawn zone (on table, in front of robot)
 OBJECT_LOW  = np.array([0.30, -0.10, CUBE_Z])
