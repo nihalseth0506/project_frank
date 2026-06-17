@@ -29,14 +29,14 @@ HOME_POSE = np.array([0.0, 0.3, 0.0, -1.57079, 0.0, 2.0, -0.7853])
 # curriculum centered on pinch site position at home pose
 # pinch site at home ≈ [0.557, 0.0, 0.391] (hand [0.664,0,0.481] + offset)
 # we set curriculum slightly higher and forward for table-level tasks
-CURRICULUM_CENTER       = np.array([0.45, 0.0, 0.38])
+CURRICULUM_CENTER       = np.array([0.45, 0.0, 0.60])
 CURRICULUM_START_RADIUS = 0.08
 CURRICULUM_END_RADIUS   = 0.30
+
+TARGET_LOW  = np.array([0.25, -0.40, 0.40])
+TARGET_HIGH = np.array([0.75,  0.40, 0.85])
+
 CURRICULUM_STEPS        = 500_000
-
-TARGET_LOW  = np.array([0.25, -0.40, 0.05])
-TARGET_HIGH = np.array([0.75,  0.40, 0.65])
-
 MAX_EPISODE_STEPS = 1000
 GOAL_THRESHOLD    = 0.04
 DELTA_LIMIT       = 0.05

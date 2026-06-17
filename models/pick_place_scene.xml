@@ -381,8 +381,8 @@
 
     <!-- gripper: 0=open, 255=closed -->
     <general class="panda" name="actuator8" tendon="split"
-             forcerange="-100 100" ctrlrange="0 255"
-             gainprm="0.01568627451 0 0" biasprm="0 -100 -10"/>
+             forcerange="-500 500" ctrlrange="0 255"
+             gainprm="15.0 0 0" biasprm="0 -500 -50"/>
   </actuator>
 
   <!-- ===================== KEYFRAMES ===================== -->

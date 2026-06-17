@@ -25,7 +25,19 @@ SCENE_PATH = os.path.join(_PROJ_ROOT, "models", "pick_place_scene.xml")
 
 def _find_latest_panda_reach():
     panda_dir = os.path.join(_PROJ_ROOT, "models", "reach", "panda")
-    best      = os.path.join(panda_dir, "trained_v5", "best")
+    if not os.path.exists(panda_dir):
+        return None, None
+    versions = [
+        d for d in os.listdir(panda_dir)
+        if d.startswith("trained_v") and
+        os.path.isdir(os.path.join(panda_dir, d))
+    ]
+    if not versions:
+        return None, None
+    nums   = [int(d.replace("trained_v", "")) for d in versions
+              if d.replace("trained_v", "").isdigit()]
+    latest = max(nums)
+    best   = os.path.join(panda_dir, f"trained_v{latest}", "best")
     return os.path.join(best, "best_model"), os.path.join(best, "vec_normalize.pkl")
 
 
@@ -189,9 +201,12 @@ class ScriptedPickPlace:
         if self.render_mode and self.viewer is None:
             self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
 
+        success     = False
+        grasp_tries = 0
+
         for _ in range(max_steps * 8):
 
-            # STAGE 0: approach above cube
+            # ── STAGE 0: approach above cube ──────────────────────────────
             if self.stage == 0:
                 tgt    = self.object_pos.copy()
                 tgt[2] = CUBE_Z + ABOVE_HEIGHT
@@ -210,92 +225,116 @@ class ScriptedPickPlace:
                     print(f"  ✗ APPROACH timeout (xy={dist_xy:.3f} z={dist_z:.3f})")
                     break
 
-            # STAGE 1: descend to cube
+            # ── STAGE 1: descend incrementally to cube ────────────────────
             elif self.stage == 1:
                 self.object_pos = self._get_object_pos().copy()
                 pinch           = self._get_pinch()
 
-                FINGER_OFFSET   = 0.117
-                pinch_target_z  = self.object_pos[2] + 0.02 - FINGER_OFFSET
+                # fingers are 0.117m above pinch site
+                # to get fingers at cube top (0.450), pinch needs to be at 0.333
+                # but arm minimum is ~0.38, so target just as low as possible
+                FINGER_OFFSET = 0.117
+                finger_target_z = self.object_pos[2] + 0.02   # 2cm above cube top
+                pinch_target_z  = finger_target_z - FINGER_OFFSET   # 0.307
 
                 tgt    = self.object_pos.copy()
                 tgt[2] = max(pinch_target_z, pinch[2] - 0.02)
 
-                self._reach_step(tgt, constrain_orientation=False)
+                self._reach_step(tgt, constrain_orientation=False)  # no joint constraint
                 self._open_gripper()
+                
+                pinch      = self._get_pinch()
+                finger_z   = pinch[2] + FINGER_OFFSET
+                dist_xy    = np.linalg.norm(pinch[:2] - self.object_pos[:2])
 
-                pinch    = self._get_pinch()
-                finger_z = pinch[2] + FINGER_OFFSET
-                dist_xy  = np.linalg.norm(pinch[:2] - self.object_pos[:2])
+                print(f"    descend: finger z={finger_z:.3f} "
+                    f"cube z={self.object_pos[2]:.3f} xy={dist_xy:.3f}")
 
-                print(f"    descend: finger z={finger_z:.3f} cube z={self.object_pos[2]:.3f} xy={dist_xy:.3f}")
-
+                # success when fingers are within 3cm of cube top AND xy aligned
                 if finger_z < self.object_pos[2] + 0.05 and dist_xy < 0.07:
                     print(f"  ✓ DESCEND — finger z={finger_z:.3f}")
                     self.stage = 2; self.stage_step = 0
                 elif self.stage_step >= max_steps:
-                    print(f"  ✗ DESCEND timeout")
+                    print(f"  ✗ DESCEND timeout — finger z={finger_z:.3f}")
                     break
 
-            # STAGE 2: close gripper — freeze arm, just close
+            # ── STAGE 2: grasp ─────────────────────────────────────────────
             elif self.stage == 2:
-                self.data.ctrl[:7] = self.data.qpos[:7].copy()  # hold position
                 self._close_gripper()
                 self._step()
 
-                if self.stage_step >= 600:
-                    cube_h   = self._get_object_pos()[2] - TABLE_Z
-                    ee_dist  = np.linalg.norm(self._get_pinch() - self._get_object_pos())
-                    print(f"  After close: cube_h={cube_h:.4f} pinch→cube={ee_dist:.3f}")
-                    fj1 = self.data.qpos[7]   # finger joint 1
-                    fj2 = self.data.qpos[8]   # finger joint 2
-                    print(f"    grip step {self.stage_step}: ctrl[7]={self.data.ctrl[7]:.1f} fj1={fj1:.4f} fj2={fj2:.4f}")
-                    self.stage = 3; self.stage_step = 0
+                if self.stage_step >= 150:
+                    grasped      = self._is_grasped()
+                    grasp_tries += 1
+                    ee_to_cube   = np.linalg.norm(
+                        self._get_pinch() - self._get_object_pos())
+                    print(f"  Grasp try {grasp_tries}: {grasped} "
+                          f"(pinch→cube={ee_to_cube:.3f}m)")
 
-            # STAGE 3: lift — scripted joint2
+                    if grasped:
+                        print(f"  ✓ GRASP — cube held")
+                        self.stage = 3; self.stage_step = 0
+                    elif grasp_tries < 3:
+                        self.stage = 1; self.stage_step = 0
+                    else:
+                        print(f"  ✗ GRASP failed")
+                        break
+
+            # ── STAGE 3: lift ──────────────────────────────────────────────
             elif self.stage == 3:
-                cube_pos = self._get_object_pos().copy()
-                # target = current cube xy, but higher z
-                tgt = np.array([cube_pos[0], cube_pos[1], TABLE_Z + LIFT_HEIGHT + 0.10])
-
-                self._reach_step(tgt, constrain_orientation=False)
-                self.data.ctrl[7] = 0.0   # keep gripper closed directly
+                pinch = self._get_pinch()
+                tgt   = np.array([pinch[0], pinch[1], TABLE_Z + LIFT_HEIGHT])
+                self._reach_step(tgt)
+                self._close_gripper()
 
                 cube_h = self._get_object_pos()[2] - TABLE_Z
-                print(f"    lift: cube_h={cube_h:.3f}")
 
                 if cube_h > LIFT_HEIGHT - 0.04:
                     print(f"  ✓ LIFT — height {cube_h:.3f}m")
-                    self.stage = 4; self.stage_step = 0  # ← transition, don't break
+                    self.stage = 4; self.stage_step = 0
                 elif self.stage_step >= max_steps:
                     print(f"  ✗ LIFT timeout — height {cube_h:.3f}m")
-                    break
-            
-            elif self.stage == 4:
-                # transport: reach policy moves to target xy, higher z
-                tgt    = self.target_pos.copy()
-                tgt[2] = TABLE_Z + PLACE_HEIGHT + 0.10   # well above table
+                    if cube_h < 0.03:
+                        print(f"  ↺ Cube not lifted — retrying descent")
+                        self.stage = 1; self.stage_step = 0; grasp_tries = 0
+                    else:
+                        self.stage = 4; self.stage_step = 0
 
-                self._reach_step(tgt, constrain_orientation=False)
-                self.data.ctrl[7] = 0.0   # keep gripper closed
+            # ── STAGE 4: transport above target ────────────────────────────
+            elif self.stage == 4:
+                tgt    = self.target_pos.copy()
+                tgt[2] = TABLE_Z + PLACE_HEIGHT
+                self._reach_step(tgt)
+                self._close_gripper()
 
                 pinch   = self._get_pinch()
                 dist_xy = np.linalg.norm(pinch[:2] - tgt[:2])
                 dist_z  = abs(pinch[2] - tgt[2])
-                cube_h  = self._get_object_pos()[2] - TABLE_Z
 
-                print(f"    transport: pinch={pinch.round(3)} xy={dist_xy:.3f} cube_h={cube_h:.3f}")
-
-                if dist_xy < 0.05 and dist_z < 0.05:
+                if dist_xy < 0.06 and dist_z < 0.06:
                     print(f"  ✓ TRANSPORT — pinch {pinch.round(3)}")
                     self.stage = 5; self.stage_step = 0
                 elif self.stage_step >= max_steps:
-                    print(f"  ✗ TRANSPORT timeout (xy={dist_xy:.3f})")
+                    print(f"  ✗ TRANSPORT timeout (xy={dist_xy:.3f} z={dist_z:.3f})")
                     break
 
+            # ── STAGE 5: lower to place ────────────────────────────────────
             elif self.stage == 5:
-                # release — open gripper and check success
-                self.data.ctrl[7] = 255.0
+                tgt    = self.target_pos.copy()
+                tgt[2] = CUBE_Z + 0.05
+                self._reach_step(tgt)
+                self._close_gripper()
+
+                pinch = self._get_pinch()
+                dist  = np.linalg.norm(pinch - tgt)
+
+                if dist < 0.06 or self.stage_step >= max_steps:
+                    print(f"  ✓ LOWER — pinch {pinch.round(3)}")
+                    self.stage = 6; self.stage_step = 0
+
+            # ── STAGE 6: release ───────────────────────────────────────────
+            elif self.stage == 6:
+                self._open_gripper()
                 self._step()
 
                 if self.stage_step >= 100:
@@ -303,12 +342,16 @@ class ScriptedPickPlace:
                     xy_dist  = np.linalg.norm(cube_pos[:2] - self.target_pos[:2])
                     cube_h   = cube_pos[2] - TABLE_Z
                     print(f"  RELEASE — cube→target={xy_dist:.4f}m  h={cube_h:.4f}m")
-                    success  = bool(xy_dist < 0.15 and cube_h < 0.10)
-                    return success
+                    success  = bool(xy_dist < 0.10 and cube_h < 0.07)
+                    self.stage = 7
+                    break
+
+            elif self.stage == 7:
+                break
 
             self.stage_step += 1
 
-        return False
+        return success
 
     def close(self):
         if self.viewer is not None:

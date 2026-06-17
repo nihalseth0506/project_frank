@@ -143,13 +143,13 @@ def train():
     )
 
     print(f"\nPolicy network : 20 → 256 → 256 → 7")
-    print(f"Training steps : 3,000,000")
+    print(f"Training steps : 2,000,000")
     print(f"Learning rate  : 1e-4")
     print(f"Ent coef       : 0.05")
     print(f"Curriculum     : 0.1m → 0.4m over 500k steps\n")
 
     model.learn(
-        total_timesteps = 3_000_000,
+        total_timesteps = 2_000_000,
         callback        = [checkpoint_callback, eval_callback, save_norm_callback],
         progress_bar    = True
     )
