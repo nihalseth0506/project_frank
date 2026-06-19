@@ -144,7 +144,7 @@
 
     <!-- floor -->
     <geom name="floor" type="plane" size="3 3 0.1"
-          material="floor_mat" friction="0.8 0.005 0.0001"
+          material="floor_mat" friction="0.4 0.005 0.0001"
           contype="1" conaffinity="1"/>
 
     <!-- robot pedestal — robot base mounts at z=0.4 -->
@@ -325,17 +325,35 @@
       <freejoint name="object_joint"/>
       <geom name="object_geom" type="box" size="0.02 0.02 0.025"
             material="object_mat"
-            friction="1.5 0.05 0.001"
+            friction="1.0 0.05 0.001"
             condim="4" contype="1" conaffinity="1"
             solref="0.008 1" solimp="0.99 0.999 0.001 0.5 2"/>
-      <inertial pos="0 0 0" mass="0.1"
+      <inertial pos="0 0 0" mass="0.05"
                 diaginertia="1.5e-5 1.5e-5 1.5e-5"/>
     </body>
-
+    <!-- ===== PLACEMENT TRAY ===== -->
+    <body name="tray" pos="0.45 -0.20 0.531">
+        <!-- tray floor -->
+        <geom name="tray_floor" type="box" size="0.08 0.08 0.003"
+              rgba="0.2 0.2 0.8 1" contype="1" conaffinity="1"/>
+        <!-- tray walls -->
+        <geom name="tray_wall_front" type="box" size="0.085 0.003 0.01"
+              pos="0 0.083 0.01" rgba="0.2 0.2 0.8 0.7"
+              contype="1" conaffinity="1"/>
+        <geom name="tray_wall_back"  type="box" size="0.085 0.003 0.01"
+              pos="0 -0.083 0.01" rgba="0.2 0.2 0.8 0.7"
+              contype="1" conaffinity="1"/>
+        <geom name="tray_wall_left"  type="box" size="0.003 0.08 0.01"
+              pos="0.083 0 0.01" rgba="0.2 0.2 0.8 0.7"
+              contype="1" conaffinity="1"/>
+        <geom name="tray_wall_right" type="box" size="0.003 0.08 0.01"
+              pos="-0.083 0 0.01" rgba="0.2 0.2 0.8 0.7"
+              contype="1" conaffinity="1"/>
+    </body>
     <!-- ===== TARGET ZONE ===== -->
     <!-- flat marker on table showing where to place the cube -->
     <body name="target_indicator" pos="0.45 -0.2 0.531">
-      <geom name="target_geom" type="box" size="0.035 0.035 0.001"
+      <geom name="target_geom" type="box" size="0.05 0.08 0.001"
             material="target_mat" contype="0" conaffinity="0"/>
     </body>
 
@@ -382,7 +400,7 @@
     <!-- gripper: 0=open, 255=closed -->
     <general class="panda" name="actuator8" tendon="split"
              forcerange="-500 500" ctrlrange="0 255"
-             gainprm="15.0 0 0" biasprm="0 -500 -50"/>
+             gainprm="200.0 0 0" biasprm="0 -500 -50"/>
   </actuator>
 
   <!-- ===================== KEYFRAMES ===================== -->

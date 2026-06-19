@@ -34,16 +34,17 @@ CUBE_HALF_H = 0.025
 CUBE_Z      = TABLE_Z + CUBE_HALF_H   # 0.555
 
 ABOVE_HEIGHT = 0.08
-LIFT_HEIGHT  = 0.14
-PLACE_HEIGHT = 0.12
+LIFT_HEIGHT  = 0.08
+PLACE_HEIGHT = 0.08
 
 HOME_QPOS = np.array([0.0, 0.3, 0.0, -1.57079, 0.0, 2.0, -0.7853, 0.04, 0.04])
 HOME_CTRL = np.array([0.0, 0.3, 0.0, -1.57079, 0.0, 2.0, -0.7853, 0.0])
 
-OBJECT_LOW  = np.array([0.35, -0.10, CUBE_Z])
-OBJECT_HIGH = np.array([0.55,  0.15, CUBE_Z])
-TARGET_LOW  = np.array([0.35, -0.28, CUBE_Z])
-TARGET_HIGH = np.array([0.55, -0.12, CUBE_Z])
+OBJECT_LOW  = np.array([0.50, -0.02, CUBE_Z])   # push x start further out
+OBJECT_HIGH = np.array([0.60,  0.10, CUBE_Z])   # keep same x end
+
+TARGET_LOW  = np.array([0.45, -0.25, CUBE_Z])
+TARGET_HIGH = np.array([0.55, -0.15, CUBE_Z])
 
 
 class ScriptedPickPlace:
@@ -78,6 +79,9 @@ class ScriptedPickPlace:
         self.stage_step = 0
         self.target_pos = np.zeros(3)
         self.object_pos = np.zeros(3)
+
+        self._tray_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "tray")
 
     def _load_policy(self, model_path, norm_path):
         from environment.reach_env_panda import PandaReachEnv
@@ -171,9 +175,31 @@ class ScriptedPickPlace:
                 break
 
         self.target_pos = np.array(
-            [tgt_xy[0], tgt_xy[1], TABLE_Z + 0.002], dtype=np.float32)
+            [tgt_xy[0] + 0.03, tgt_xy[1], TABLE_Z + 0.002], dtype=np.float32)
         self.model.body_pos[self._target_id] = self.target_pos.copy()
         mujoco.mj_forward(self.model, self.data)
+
+        # random z rotation for cube
+        theta = np.random.uniform(0, 2 * np.pi)
+        
+        qw    = np.cos(theta / 2)
+        qz    = np.sin(theta / 2)
+
+        self.data.qpos[qs:qs+3]   = obj_pos
+        self.data.qpos[qs+3]      = qw   # w
+        self.data.qpos[qs+4]      = 0.0  # x
+        self.data.qpos[qs+5]      = 0.0  # y
+        self.data.qpos[qs+6]      = qz   # z
+        self.data.qvel[qs:qs+6]   = 0.0
+
+        # in reset(), after setting target_pos:
+        self._tray_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "tray")
+
+        # move tray to target position
+        self.model.body_pos[self._tray_id] = np.array([
+            tgt_xy[0], tgt_xy[1], TABLE_Z + 0.001
+        ])
 
         self.object_pos = self._get_object_pos().copy()
         self.stage      = 0
@@ -188,6 +214,16 @@ class ScriptedPickPlace:
 
         if self.render_mode and self.viewer is None:
             self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
+
+        # warmup — settle arm at home before policy starts
+        for _ in range(50):
+            self.data.ctrl[:7] = HOME_CTRL[:7].copy()
+            self.data.ctrl[7]  = 255.0
+            for _ in range(5):
+                mujoco.mj_step(self.model, self.data)
+            if self.render_mode and self.viewer is not None:
+                self.viewer.sync()
+                time.sleep(0.002)
 
         for _ in range(max_steps * 8):
 
@@ -216,10 +252,10 @@ class ScriptedPickPlace:
                 pinch           = self._get_pinch()
 
                 FINGER_OFFSET   = 0.117
-                pinch_target_z  = self.object_pos[2] + 0.02 - FINGER_OFFSET
+                pinch_target_z  = self.object_pos[2] + 0.10 - FINGER_OFFSET
 
                 tgt    = self.object_pos.copy()
-                tgt[2] = max(pinch_target_z, pinch[2] - 0.02)
+                tgt[2] = max(pinch_target_z, pinch[2] - 0.08)
 
                 self._reach_step(tgt, constrain_orientation=False)
                 self._open_gripper()
@@ -230,7 +266,7 @@ class ScriptedPickPlace:
 
                 print(f"    descend: finger z={finger_z:.3f} cube z={self.object_pos[2]:.3f} xy={dist_xy:.3f}")
 
-                if finger_z < self.object_pos[2] + 0.05 and dist_xy < 0.07:
+                if finger_z < self.object_pos[2] + 0.05 and dist_xy < 0.04:
                     print(f"  ✓ DESCEND — finger z={finger_z:.3f}")
                     self.stage = 2; self.stage_step = 0
                 elif self.stage_step >= max_steps:
@@ -243,20 +279,20 @@ class ScriptedPickPlace:
                 self._close_gripper()
                 self._step()
 
-                if self.stage_step >= 600:
-                    cube_h   = self._get_object_pos()[2] - TABLE_Z
-                    ee_dist  = np.linalg.norm(self._get_pinch() - self._get_object_pos())
-                    print(f"  After close: cube_h={cube_h:.4f} pinch→cube={ee_dist:.3f}")
-                    fj1 = self.data.qpos[7]   # finger joint 1
-                    fj2 = self.data.qpos[8]   # finger joint 2
-                    print(f"    grip step {self.stage_step}: ctrl[7]={self.data.ctrl[7]:.1f} fj1={fj1:.4f} fj2={fj2:.4f}")
+                fj1 = self.data.qpos[7]
+
+                # exit when fingers closed enough OR max wait reached
+                if self.stage_step >= 275:
+                    cube_h  = self._get_object_pos()[2] - TABLE_Z
+                    ee_dist = np.linalg.norm(self._get_pinch() - self._get_object_pos())
+                    print(f"  After close: cube_h={cube_h:.4f} ee={ee_dist:.3f} fj1={fj1:.4f} steps={self.stage_step}")
                     self.stage = 3; self.stage_step = 0
 
             # STAGE 3: lift — scripted joint2
             elif self.stage == 3:
                 cube_pos = self._get_object_pos().copy()
                 # target = current cube xy, but higher z
-                tgt = np.array([cube_pos[0], cube_pos[1], TABLE_Z + LIFT_HEIGHT + 0.10])
+                tgt = np.array([cube_pos[0], cube_pos[1], TABLE_Z + LIFT_HEIGHT + 0.05])
 
                 self._reach_step(tgt, constrain_orientation=False)
                 self.data.ctrl[7] = 0.0   # keep gripper closed directly
@@ -272,12 +308,10 @@ class ScriptedPickPlace:
                     break
             
             elif self.stage == 4:
-                # transport: reach policy moves to target xy, higher z
                 tgt    = self.target_pos.copy()
-                tgt[2] = TABLE_Z + PLACE_HEIGHT + 0.10   # well above table
-
+                tgt[2] = TABLE_Z + PLACE_HEIGHT + 0.02
                 self._reach_step(tgt, constrain_orientation=False)
-                self.data.ctrl[7] = 0.0   # keep gripper closed
+                self.data.ctrl[7] = 0.0
 
                 pinch   = self._get_pinch()
                 dist_xy = np.linalg.norm(pinch[:2] - tgt[:2])
@@ -286,24 +320,31 @@ class ScriptedPickPlace:
 
                 print(f"    transport: pinch={pinch.round(3)} xy={dist_xy:.3f} cube_h={cube_h:.3f}")
 
-                if dist_xy < 0.05 and dist_z < 0.05:
-                    print(f"  ✓ TRANSPORT — pinch {pinch.round(3)}")
+                # release when xy is close — don't wait for perfect z alignment
+                if dist_xy < 0.05:
+                    print(f"  ✓ TRANSPORT — releasing")
                     self.stage = 5; self.stage_step = 0
                 elif self.stage_step >= max_steps:
-                    print(f"  ✗ TRANSPORT timeout (xy={dist_xy:.3f})")
-                    break
+                    # timeout but still release if reasonably close
+                    if dist_xy < 0.10:
+                        print(f"  ⚠ TRANSPORT partial — releasing anyway (xy={dist_xy:.3f})")
+                        self.stage = 5; self.stage_step = 0
+                    else:
+                        print(f"  ✗ TRANSPORT timeout (xy={dist_xy:.3f})")
+                        break
 
             elif self.stage == 5:
-                # release — open gripper and check success
-                self.data.ctrl[7] = 255.0
+                # ramp gripper open slowly to avoid flinging cube
+                current_ctrl = self.data.ctrl[7]
+                self.data.ctrl[7] = min(current_ctrl + 10.0, 255.0)  # open 10 units per step
                 self._step()
 
-                if self.stage_step >= 100:
+                if self.stage_step >= 50:
                     cube_pos = self._get_object_pos()
                     xy_dist  = np.linalg.norm(cube_pos[:2] - self.target_pos[:2])
                     cube_h   = cube_pos[2] - TABLE_Z
                     print(f"  RELEASE — cube→target={xy_dist:.4f}m  h={cube_h:.4f}m")
-                    success  = bool(xy_dist < 0.15 and cube_h < 0.10)
+                    success  = bool(xy_dist < 0.09 and cube_h < 0.05)
                     return success
 
             self.stage_step += 1

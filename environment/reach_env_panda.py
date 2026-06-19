@@ -29,12 +29,12 @@ HOME_POSE = np.array([0.0, 0.3, 0.0, -1.57079, 0.0, 2.0, -0.7853])
 # curriculum centered on pinch site position at home pose
 # pinch site at home ≈ [0.557, 0.0, 0.391] (hand [0.664,0,0.481] + offset)
 # we set curriculum slightly higher and forward for table-level tasks
-CURRICULUM_CENTER       = np.array([0.45, 0.0, 0.60])
+CURRICULUM_CENTER       = np.array([0.45, 0.0, 0.38])
 CURRICULUM_START_RADIUS = 0.08
 CURRICULUM_END_RADIUS   = 0.30
 
-TARGET_LOW  = np.array([0.25, -0.40, 0.40])
-TARGET_HIGH = np.array([0.75,  0.40, 0.85])
+TARGET_LOW  = np.array([0.25, -0.40, 0.05])
+TARGET_HIGH = np.array([0.75,  0.40, 0.65])
 
 CURRICULUM_STEPS        = 500_000
 MAX_EPISODE_STEPS = 1000
@@ -105,16 +105,13 @@ class PandaReachEnv(gym.Env):
         return float(np.linalg.norm(self._get_ee_pos() - self.target_pos))
 
     def _compute_reward(self, distance):
-        reward = -distance * 2.0   # stronger distance penalty like FR3
+        reward = -distance * 2.0
 
-        if distance < 0.20:
-            reward += 0.5
-        if distance < 0.10:
-            reward += 2.0
-        if distance < 0.05:
-            reward += 5.0
-        if distance < GOAL_THRESHOLD:
-            reward += 10.0
+        # distance bonuses
+        if distance < 0.20: reward += 0.5
+        if distance < 0.10: reward += 2.0
+        if distance < 0.05: reward += 5.0
+        if distance < GOAL_THRESHOLD: reward += 10.0
 
         return reward
 
@@ -147,6 +144,10 @@ class PandaReachEnv(gym.Env):
     def step(self, action):
         current = self.data.ctrl[:7].copy()
         new_arm = current + action.astype(np.float64)
+
+        # constrain joint6 to keep gripper vertical during training
+        new_arm[5] = np.clip(new_arm[5], 1.70, 2.10)
+        new_arm[6] = np.clip(new_arm[6], -0.2, 0.2)
 
         for i in range(7):
             lo = self.model.actuator_ctrlrange[i, 0]
