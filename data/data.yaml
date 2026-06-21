@@ -1,0 +1,5 @@
+path: C:\Users\nihal\Desktop\project_frank\data
+train: images/train
+val: images/val
+nc: 1
+names: ['cube']

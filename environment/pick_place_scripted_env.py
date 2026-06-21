@@ -17,6 +17,9 @@ from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.monitor import Monitor
 
+from ultralytics import YOLO
+import math
+
 _HERE      = os.path.dirname(os.path.abspath(__file__))
 _PROJ_ROOT = os.path.dirname(_HERE)
 
@@ -82,6 +85,24 @@ class ScriptedPickPlace:
 
         self._tray_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, "tray")
+
+        YOLO_PATH = os.path.join(_PROJ_ROOT, "models", "yolo",
+                                "cube_detector", "weights", "best.pt")
+
+        # camera parameters — must match XML
+        self._cam_name = "overhead_cam"
+        self._img_w    = 640
+        self._img_h    = 480
+        self._fovy_deg = 60.0
+        self._cam_x    = 0.5
+        self._cam_y    = -0.05
+        self._cam_z    = 1.5
+
+        self._renderer = mujoco.Renderer(self.model,
+                                        height=self._img_h,
+                                        width=self._img_w)
+        self._detector = YOLO(YOLO_PATH)
+        print("YOLO detector loaded.")
 
     def _load_policy(self, model_path, norm_path):
         from environment.reach_env_panda import PandaReachEnv
@@ -154,6 +175,57 @@ class ScriptedPickPlace:
         if self.render_mode and self.viewer is not None:
             self.viewer.sync()
             time.sleep(0.002)
+    
+    def _detect_cube_pos(self):
+        self._renderer.update_scene(self.data, camera=self._cam_name)
+        frame   = self._renderer.render()
+        results = self._detector(frame, verbose=False, conf=0.1)[0]
+
+        import cv2
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+        if len(results.boxes) == 0:
+            cv2.putText(frame_bgr, "NO DETECTION", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,255), 2)
+            cv2.imshow("FRANK — Overhead Camera", frame_bgr)
+            cv2.waitKey(1)
+            return None
+
+        box  = results.boxes[results.boxes.conf.argmax()]
+        u    = float(box.xywh[0][0])
+        v    = float(box.xywh[0][1])
+        conf = float(box.conf[0])
+
+        x1, y1, x2, y2 = [int(x) for x in box.xyxy[0]]
+        cv2.rectangle(frame_bgr, (x1,y1), (x2,y2), (0,255,0), 2)
+        cv2.circle(frame_bgr, (int(u), int(v)), 5, (0,0,255), -1)
+        cv2.putText(frame_bgr, f"cube  conf={conf:.2f}", (x1, y1-8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+
+        wx, wy = self._pixel_to_world(u, v)
+        cv2.putText(frame_bgr, f"world=({wx:.3f}, {wy:.3f})", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
+
+        cv2.imshow("FRANK — Overhead Camera", frame_bgr)
+        cv2.waitKey(1)
+
+        return np.array([wx, wy, CUBE_Z])
+
+    def _pixel_to_world(self, u, v):
+        fovy_rad     = math.radians(self._fovy_deg)
+        half_fov     = fovy_rad / 2.0
+        aspect       = self._img_w / self._img_h
+        height_above = self._cam_z - TABLE_Z
+        scale_y      = math.tan(half_fov) * height_above
+        scale_x      = scale_y * aspect
+
+        u_norm =  (u / self._img_w) * 2.0 - 1.0
+        v_norm =  (v / self._img_h) * 2.0 - 1.0
+
+        wx = self._cam_x + u_norm * scale_x
+        wy = self._cam_y - v_norm * scale_y
+
+        return wx, wy
 
     def reset(self):
         mujoco.mj_resetData(self.model, self.data)
@@ -181,31 +253,51 @@ class ScriptedPickPlace:
 
         # random z rotation for cube
         theta = np.random.uniform(0, 2 * np.pi)
-        
         qw    = np.cos(theta / 2)
         qz    = np.sin(theta / 2)
 
-        self.data.qpos[qs:qs+3]   = obj_pos
-        self.data.qpos[qs+3]      = qw   # w
-        self.data.qpos[qs+4]      = 0.0  # x
-        self.data.qpos[qs+5]      = 0.0  # y
-        self.data.qpos[qs+6]      = qz   # z
-        self.data.qvel[qs:qs+6]   = 0.0
-
-        # in reset(), after setting target_pos:
-        self._tray_id = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_BODY, "tray")
+        self.data.qpos[qs:qs+3] = obj_pos
+        self.data.qpos[qs+3]    = qw
+        self.data.qpos[qs+4]    = 0.0
+        self.data.qpos[qs+5]    = 0.0
+        self.data.qpos[qs+6]    = qz
+        self.data.qvel[qs:qs+6] = 0.0
 
         # move tray to target position
         self.model.body_pos[self._tray_id] = np.array([
             tgt_xy[0], tgt_xy[1], TABLE_Z + 0.001
         ])
 
-        self.object_pos = self._get_object_pos().copy()
+        mujoco.mj_forward(self.model, self.data)
+
+        # retract arm for clean overhead view
+        saved_qpos = self.data.qpos[:9].copy()
+        saved_ctrl = self.data.ctrl[:8].copy()
+
+        self.data.qpos[:7] = np.array([-1.5, -1.2, 0.0, -2.5, 0.0, 2.0, -0.7853])
+        self.data.qpos[7]  = 0.04
+        self.data.qpos[8]  = 0.04
+        self.data.ctrl[:7] = np.array([-1.5, -1.2, 0.0, -2.5, 0.0, 2.0, -0.7853])
+        mujoco.mj_forward(self.model, self.data)
+
+        # detect with clear view
+        detected = self._detect_cube_pos()
+
+        # restore arm to home
+        self.data.qpos[:9] = saved_qpos
+        self.data.ctrl[:8] = saved_ctrl
+        mujoco.mj_forward(self.model, self.data)
+
+        if detected is not None:
+            self.object_pos = detected
+            print(f"  Cube (detected) : {self.object_pos.round(3)}")
+        else:
+            self.object_pos = self._get_object_pos().copy()
+            print(f"  Cube (GT fallback): {self.object_pos.round(3)}")
+
         self.stage      = 0
         self.stage_step = 0
 
-        print(f"  Cube   : {self.object_pos.round(3)}")
         print(f"  Target : {self.target_pos.round(3)}")
         print(f"  Pinch  : {self._get_pinch().round(3)}")
 
@@ -215,15 +307,16 @@ class ScriptedPickPlace:
         if self.render_mode and self.viewer is None:
             self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
 
-        # warmup — settle arm at home before policy starts
-        for _ in range(50):
+        # warmup — hold home pose visually so viewer shows clean start
+        for _ in range(100):   # increased from 50
+            self.data.qpos[:7] = HOME_QPOS[:7].copy()
             self.data.ctrl[:7] = HOME_CTRL[:7].copy()
             self.data.ctrl[7]  = 255.0
             for _ in range(5):
                 mujoco.mj_step(self.model, self.data)
             if self.render_mode and self.viewer is not None:
                 self.viewer.sync()
-                time.sleep(0.002)
+                time.sleep(0.005)   # slightly slower so home pose is visible
 
         for _ in range(max_steps * 8):
 
@@ -248,8 +341,19 @@ class ScriptedPickPlace:
 
             # STAGE 1: descend to cube
             elif self.stage == 1:
-                self.object_pos = self._get_object_pos().copy()
+                #self.object_pos = self._get_object_pos().copy()
                 pinch           = self._get_pinch()
+
+                # update camera view every 10 steps
+                if self.stage_step % 10 == 0:
+                    self._renderer.update_scene(self.data, camera=self._cam_name)
+                    frame     = self._renderer.render()
+                    import cv2
+                    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    cv2.putText(frame_bgr, f"DESCENDING  step={self.stage_step}",
+                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,165,255), 2)
+                    cv2.imshow("FRANK — Overhead Camera", frame_bgr)
+                    cv2.waitKey(1)
 
                 FINGER_OFFSET   = 0.117
                 pinch_target_z  = self.object_pos[2] + 0.10 - FINGER_OFFSET
@@ -290,6 +394,18 @@ class ScriptedPickPlace:
 
             # STAGE 3: lift — scripted joint2
             elif self.stage == 3:
+
+                # update camera view every 10 steps
+                if self.stage_step % 10 == 0:
+                    self._renderer.update_scene(self.data, camera=self._cam_name)
+                    frame     = self._renderer.render()
+                    import cv2
+                    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    cv2.putText(frame_bgr, f"DESCENDING  step={self.stage_step}",
+                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,165,255), 2)
+                    cv2.imshow("FRANK — Overhead Camera", frame_bgr)
+                    cv2.waitKey(1)
+
                 cube_pos = self._get_object_pos().copy()
                 # target = current cube xy, but higher z
                 tgt = np.array([cube_pos[0], cube_pos[1], TABLE_Z + LIFT_HEIGHT + 0.05])
@@ -308,6 +424,18 @@ class ScriptedPickPlace:
                     break
             
             elif self.stage == 4:
+
+                # update camera view every 10 steps
+                if self.stage_step % 10 == 0:
+                    self._renderer.update_scene(self.data, camera=self._cam_name)
+                    frame     = self._renderer.render()
+                    import cv2
+                    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    cv2.putText(frame_bgr, f"DESCENDING  step={self.stage_step}",
+                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,165,255), 2)
+                    cv2.imshow("FRANK — Overhead Camera", frame_bgr)
+                    cv2.waitKey(1)
+
                 tgt    = self.target_pos.copy()
                 tgt[2] = TABLE_Z + PLACE_HEIGHT + 0.02
                 self._reach_step(tgt, constrain_orientation=False)
@@ -352,6 +480,8 @@ class ScriptedPickPlace:
         return False
 
     def close(self):
+        import cv2
+        cv2.destroyAllWindows()
         if self.viewer is not None:
             self.viewer.close()
             self.viewer = None

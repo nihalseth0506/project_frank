@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -6,13 +7,49 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# MuJoCo Menagerie — download separately
 models/mujoco_menagerie-main/
-models/reach/
-models/pick_place/
+
+# Training logs
 logs/
 logs_pick_place/
 logs_v8/
-*.zip
-*.pkl
-models/reach/panda/
 logs/reach_panda/
+
+# Reach policies — keep only active v5
+models/reach/trained/
+models/reach/trained_v1_absolute_actions/
+models/reach/trained_v2/
+models/reach/trained_v3_curriculum/
+models/reach/trained_v4_normalized/
+models/reach/trained_v6/
+models/reach/trained_v7_008/
+models/reach/trained_v8_005/
+models/reach/panda/trained_v1/
+models/reach/panda/trained_v2/
+models/reach/panda/trained_v3/
+models/reach/panda/trained_v4/
+models/reach/panda/trained_v6/
+models/reach/panda/trained_v7/
+
+# Pick place trained models
+models/pick_place/
+
+# Downloaded base YOLO models
+yolov8n.pt
+yolo26n.pt
+
+# YOLO training artifacts — keep only best.pt
+models/yolo/cube_detector/weights/last.pt
+models/yolo/cube_detector/*.png
+models/yolo/cube_detector/*.jpg
+models/yolo/cube_detector/*.csv
+models/yolo/cube_detector/args.yaml
+
+# Training data — regenerate with generate_training_data.py
+data/images/
+data/labels/
+
+# Debug images
+detection_latest.png
