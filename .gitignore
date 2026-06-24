@@ -32,6 +32,8 @@ models/reach/panda/trained_v3/
 models/reach/panda/trained_v4/
 models/reach/panda/trained_v6/
 models/reach/panda/trained_v7/
+models/reach/panda/trained_v8/
+models/reach/panda/trained_v9/
 
 # Pick place trained models
 models/pick_place/
@@ -53,3 +55,16 @@ data/labels/
 
 # Debug images
 detection_latest.png
+
+# Reach v5 checkpoints — keep only best/
+models/reach/panda/trained_v5/panda_reach_ppo_*.zip
+models/reach/panda/trained_v5/panda_reach_ppo_final.zip
+models/reach/panda/trained_v5/vec_normalize.pkl
+models/reach/trained_v5_005/
+
+# VLA training data
+data_vla/
+
+# YOLO VLA training artifacts — keep only best.pt
+models/yolo/cube_detector_vla/weights/last.pt
+models/yolo/cube_detector

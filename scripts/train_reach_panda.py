@@ -2,7 +2,7 @@
 train_reach_panda.py
 
 Train PPO reach policy on Franka Panda arm.
-Same approach as train.py but using PandaReachEnv.
+v8 — top-down orientation reward, no joint constraints, expanded curriculum.
 
 Saves to models/reach/panda/trained_vN/ with auto-versioning.
 """
@@ -26,14 +26,12 @@ from stable_baselines3.common.vec_env import VecNormalize
 from environment.reach_env_panda import PandaReachEnv
 
 
-# ── paths ─────────────────────────────────────────────────────────────────────
-PROJ_ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PANDA_DIR   = os.path.join(PROJ_ROOT, "models", "reach", "panda")
+PROJ_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PANDA_DIR = os.path.join(PROJ_ROOT, "models", "reach", "panda")
 os.makedirs(PANDA_DIR, exist_ok=True)
 
 
 def get_next_version():
-    """Auto-detect next version number."""
     existing = [
         d for d in os.listdir(PANDA_DIR)
         if d.startswith("trained_v") and
@@ -80,13 +78,15 @@ def train():
     os.makedirs(LOGS_DIR,   exist_ok=True)
 
     print("=" * 55)
-    print("FRANK — Panda Reach Training")
-    print("Robot: Franka Panda (panda.xml)")
+    print("FRANK — Panda Reach Training (Top-Down v8)")
+    print("Orientation reward — no hard joint constraints")
     print("=" * 55)
-    print(f"Version    : v{version}")
-    print(f"Models dir : {MODELS_DIR}")
+    print(f"Version          : v{version}")
+    print(f"Models dir       : {MODELS_DIR}")
+    print(f"Curriculum center: [0.50, 0.0, 0.60]")
+    print(f"Curriculum radius: 0.08m → 0.35m over 500k steps")
+    print(f"Orientation weight: 1.0 per step")
 
-    # ── environments ───────────────────────────────────────────────────────────
     train_env = make_vec_env(make_env, n_envs=1)
     train_env = VecNormalize(
         train_env, norm_obs=True, norm_reward=True, clip_obs=10.0
@@ -98,7 +98,6 @@ def train():
         clip_obs=10.0, training=False
     )
 
-    # ── callbacks ──────────────────────────────────────────────────────────────
     checkpoint_callback = CheckpointCallback(
         save_freq   = 10_000,
         save_path   = MODELS_DIR,
@@ -126,27 +125,25 @@ def train():
         )
     )
 
-    # ── PPO model ──────────────────────────────────────────────────────────────
     model = PPO(
-        policy        = "MlpPolicy",
-        env           = train_env,
-        verbose       = 1,
-        learning_rate = 1e-4,
-        n_steps       = 4096,
-        batch_size    = 64,
-        n_epochs      = 10,
-        gamma         = 0.99,
-        gae_lambda    = 0.95,
-        ent_coef      = 0.05,
-        policy_kwargs = dict(net_arch=[256, 256]),
+        policy          = "MlpPolicy",
+        env             = train_env,
+        verbose         = 1,
+        learning_rate   = 1e-4,
+        n_steps         = 4096,
+        batch_size      = 64,
+        n_epochs        = 10,
+        gamma           = 0.99,
+        gae_lambda      = 0.95,
+        ent_coef        = 0.05,
+        policy_kwargs   = dict(net_arch=[256, 256]),
         tensorboard_log = LOGS_DIR
     )
 
     print(f"\nPolicy network : 20 → 256 → 256 → 7")
     print(f"Training steps : 2,000,000")
     print(f"Learning rate  : 1e-4")
-    print(f"Ent coef       : 0.05")
-    print(f"Curriculum     : 0.1m → 0.4m over 500k steps\n")
+    print(f"Ent coef       : 0.05\n")
 
     model.learn(
         total_timesteps = 2_000_000,
@@ -154,7 +151,6 @@ def train():
         progress_bar    = True
     )
 
-    # ── save ───────────────────────────────────────────────────────────────────
     final_path = os.path.join(MODELS_DIR, "panda_reach_ppo_final")
     model.save(final_path)
     train_env.save(os.path.join(MODELS_DIR, "vec_normalize.pkl"))

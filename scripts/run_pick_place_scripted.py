@@ -5,7 +5,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
 from environment.pick_place_scripted_env import ScriptedPickPlace
 
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--episodes",  type=int, default=10)

@@ -2,11 +2,17 @@
 reach_env_panda.py
 
 Reach environment for Franka Panda arm — uses pinch site as EE reference.
+v8 — top-down orientation reward added, joint constraints removed from step().
+The policy learns to approach targets from above rather than from the side.
 
-The pinch site sits at [0, 0, 0.175] from the hand body — fingertip position.
-This matches pick_place_scene.xml which also defines the pinch site.
-Training with pinch site means the policy learns to put the fingertip
-at the target, not the wrist — fixing the wrist-pointing-up problem.
+Observation (20 values):
+    7  joint positions
+    7  joint velocities
+    3  pinch site xyz
+    3  target xyz
+
+Action (7 values):
+    7  joint deltas (±DELTA_LIMIT radians)
 """
 
 import os
@@ -19,45 +25,32 @@ from gymnasium import spaces
 _HERE      = os.path.dirname(os.path.abspath(__file__))
 _PROJ_ROOT = os.path.dirname(_HERE)
 
-# use the pick_place_scene.xml — it has the pinch site already defined
-# and uses panda.xml internally
 SCENE_PATH = os.path.join(_PROJ_ROOT, "models", "pick_place_scene.xml")
 
-# Panda home pose (7 arm joints)
 HOME_POSE = np.array([0.0, 0.3, 0.0, -1.57079, 0.0, 2.0, -0.7853])
 
-# curriculum centered on pinch site position at home pose
-# pinch site at home ≈ [0.557, 0.0, 0.391] (hand [0.664,0,0.481] + offset)
-# we set curriculum slightly higher and forward for table-level tasks
-CURRICULUM_CENTER       = np.array([0.45, 0.0, 0.38])
+# curriculum centered above table at reachable top-down height
+CURRICULUM_CENTER       = np.array([0.50, 0.0, 0.60])
 CURRICULUM_START_RADIUS = 0.08
-CURRICULUM_END_RADIUS   = 0.30
+CURRICULUM_END_RADIUS   = 0.35
 
 TARGET_LOW  = np.array([0.25, -0.40, 0.05])
-TARGET_HIGH = np.array([0.75,  0.40, 0.65])
+TARGET_HIGH = np.array([0.75,  0.40, 0.75])
 
-CURRICULUM_STEPS        = 500_000
+CURRICULUM_STEPS  = 500_000
 MAX_EPISODE_STEPS = 1000
 GOAL_THRESHOLD    = 0.04
 DELTA_LIMIT       = 0.05
+
+# orientation reward weight — how much top-down alignment is valued
+ORIENTATION_WEIGHT = 0.2
 
 
 class PandaReachEnv(gym.Env):
     """
     Reach environment for Franka Panda.
-
-    Uses pinch site as end effector reference — matches pick_place_scene.xml.
-    Policy trained here can be used directly in pick_place_scripted_env.py
-    without any coordinate mismatch.
-
-    Observation (20 values):
-        7  arm joint positions
-        7  arm joint velocities
-        3  pinch site xyz (fingertip position)
-        3  target xyz
-
-    Action (7 values):
-        7  arm joint deltas (±DELTA_LIMIT radians)
+    Top-down variant — policy learns vertical gripper orientation via reward.
+    No hard joint constraints in step() — orientation emerges from training.
     """
 
     metadata = {"render_modes": ["human"]}
@@ -70,7 +63,6 @@ class PandaReachEnv(gym.Env):
         self.data   = mujoco.MjData(self.model)
         self.viewer = None
 
-        # use pinch site — fingertip position
         self._pinch_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_SITE, "pinch"
         )
@@ -90,28 +82,45 @@ class PandaReachEnv(gym.Env):
         )
 
     def _get_ee_pos(self):
-        """Pinch site position — fingertip in world frame."""
         return self.data.site_xpos[self._pinch_id].copy()
 
     def _get_obs(self):
         return np.concatenate([
-            self.data.qpos[:7].copy(),   # [0:7]   arm joints
-            self.data.qvel[:7].copy(),   # [7:14]  arm velocities
-            self._get_ee_pos(),          # [14:17] pinch site xyz
-            self.target_pos              # [17:20] target xyz
+            self.data.qpos[:7].copy(),
+            self.data.qvel[:7].copy(),
+            self._get_ee_pos(),
+            self.target_pos
         ]).astype(np.float32)
 
     def _get_distance(self):
         return float(np.linalg.norm(self._get_ee_pos() - self.target_pos))
 
+    def _get_orientation_reward(self):
+        """
+        Reward for gripper pointing straight down.
+        Reads the pinch site rotation matrix — z-axis of gripper frame
+        should align with world -z (pointing down).
+        Returns value in [-1, 1]: 1.0 = perfect top-down, -1.0 = upside-down.
+        """
+        pinch_mat  = self.data.site_xmat[self._pinch_id].reshape(3, 3)
+        gripper_z  = pinch_mat[:, 2]
+        world_down = np.array([0.0, 0.0, -1.0])
+        return float(np.dot(gripper_z, world_down))
+
     def _compute_reward(self, distance):
         reward = -distance * 2.0
 
-        # distance bonuses
-        if distance < 0.20: reward += 0.5
-        if distance < 0.10: reward += 2.0
-        if distance < 0.05: reward += 5.0
-        if distance < GOAL_THRESHOLD: reward += 10.0
+        orientation_score = self._get_orientation_reward()
+
+        # small constant orientation nudge every step
+        reward += 0.2 * orientation_score
+
+        # big bonuses only unlocked when gripper is pointing down
+        if orientation_score > 0.7:
+            if distance < 0.20: reward += 0.5
+            if distance < 0.10: reward += 2.0
+            if distance < 0.05: reward += 5.0
+            if distance < GOAL_THRESHOLD: reward += 10.0
 
         return reward
 
@@ -124,7 +133,7 @@ class PandaReachEnv(gym.Env):
         self.data.qpos[:7] = HOME_POSE.copy()
         self.data.qvel[:7] = 0.0
         self.data.ctrl[:7] = HOME_POSE.copy()
-        self.data.ctrl[7]  = 0.0   # gripper open
+        self.data.ctrl[7]  = 0.0
         mujoco.mj_forward(self.model, self.data)
 
     def reset(self, seed=None, options=None):
@@ -145,14 +154,15 @@ class PandaReachEnv(gym.Env):
         current = self.data.ctrl[:7].copy()
         new_arm = current + action.astype(np.float64)
 
-        # constrain joint6 to keep gripper vertical during training
-        new_arm[5] = np.clip(new_arm[5], 1.70, 2.10)
-        new_arm[6] = np.clip(new_arm[6], -0.2, 0.2)
-
+        # no orientation constraints — policy learns to orient top-down from reward
         for i in range(7):
             lo = self.model.actuator_ctrlrange[i, 0]
             hi = self.model.actuator_ctrlrange[i, 1]
             new_arm[i] = np.clip(new_arm[i], lo, hi)
+        
+        # in step() — restore these lines
+        new_arm[5] = np.clip(new_arm[5], 1.70, 2.10)
+        new_arm[6] = np.clip(new_arm[6], -0.2, 0.2)
 
         self.data.ctrl[:7] = new_arm
         for _ in range(5):
@@ -167,7 +177,11 @@ class PandaReachEnv(gym.Env):
         terminated = bool(distance < GOAL_THRESHOLD)
         truncated  = bool(self.current_step >= MAX_EPISODE_STEPS)
 
-        info = {"distance": distance, "is_success": terminated}
+        info = {
+            "distance":    distance,
+            "is_success":  terminated,
+            "orientation": self._get_orientation_reward()
+        }
 
         if self.render_mode == "human":
             self.render()
