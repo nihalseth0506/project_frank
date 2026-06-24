@@ -8,7 +8,7 @@ A reinforcement learning framework for training a Franka Panda robot arm to auto
 
 FRANK is a from-scratch implementation of a robot learning pipeline built on top of MuJoCo and Stable-Baselines3. A neural network policy replaces classical Inverse Kinematics — instead of computing joint angles mathematically, the policy learns through trial and error in simulation to move the end effector to any target position within the robot's workspace.
 
-The reach policy is then used as the motion backbone for a full pick and place system, extended in Phase 2 with vision-based object detection — the arm no longer reads the cube position from simulation state but detects it from an overhead camera using a YOLO model trained entirely on synthetic data.
+The reach policy is then used as the motion backbone for a full pick and place system, extended in Phase 2 with vision-based object detection, and in Phase 3 with language-directed multi-object picking — the full Vision-Language-Action (VLA) pattern.
 
 ---
 
@@ -63,20 +63,39 @@ The policy drives all arm motion. Only the gripper open/close commands are scrip
 
 ### Training History
 
-Seven policy versions were trained before reaching the final result:
+Training happened in two phases — first on a bare FR3 arm to develop the RL pipeline, then retrained on the full Panda arm with gripper for deployment.
+
+**Stage 1 — FR3 reach experiments** (`models/reach/trained_v*/`) — pipeline development:
 
 | Version | Key Change | Outcome |
 |---------|------------|---------|
-| v1–v3 | Delta actions, reward scaling, curriculum | First real learning, 10–30% eval |
-| v4 | VecNormalize observation normalization | Stable training, 30% success |
-| v5 | Progressive reward, lower threshold | **70% eval** — best reach policy, used in pick and place |
-| v6 | Higher curriculum center z=0.60 | Policy hovers above table, doesn't descend |
-| v7 | Joint6 constraint during training | Arm stuck sideways, worse than v5 |
+| v1 | Absolute joint angle actions | 0% success — action space too large |
+| v2 | Delta actions (±0.05 rad) | 0% success — reward scale wrong |
+| v3 | Curriculum learning added | 10% eval — first real learning |
+| v4 | VecNormalize observation normalization | 30% success — stable training |
+| v5_005 | Progressive reward, 0.05m threshold | 65% live success |
+| v6 | Expanded workspace, 2M steps | Diverged after peak |
+| v7_008 | Entropy coef 0.05 | 85% live success |
+| v8_005 | Further tuning | Best FR3 result |
+
+**Stage 2 — Panda reach policy** (`models/reach/panda/trained_v*/`) — with gripper and pinch site:
+
+| Version | Key Change | Outcome |
+|---------|------------|---------|
+| v1–v4 | Porting FR3 lessons to Panda with gripper | Incremental improvement |
+| v5 | Progressive reward, curriculum center at table height | **Active policy — used in all phases** |
+| v6 | Higher curriculum center z=0.60 | Hovers above table, doesn't descend |
+| v7 | Joint6 constraint during training | Arm stuck sideways |
+| v8 | Orientation reward, no joint constraints | std explosion at 1M steps |
+| v9 | Conditional orientation bonuses, soft constraints | 50% eval at 170k, std explosion at 1.1M |
+
+The Panda v5 policy is used in all three phases of FRANK. v8 and v9 were attempts to learn top-down vertical approach via reward shaping — both failed due to PPO instability with mixed reward signals at scale.
 
 Key lessons:
 - **Observation normalization is mandatory** — without VecNormalize, inference fails completely
 - **Curriculum center must match deployment height** — v6 failed because training z=0.60 was above the table
 - **Delta actions beat absolute** — small corrective joint deltas are far easier to learn
+- **Orientation reward destabilises PPO at scale** — additive orientation reward causes std explosion after ~600k steps regardless of weight
 - **Training distribution must match deployment** — the single most important lesson across all versions
 
 ### Phase 1 Results
@@ -145,6 +164,73 @@ https://github.com/nihalseth0506/project_frank/assets/frank_phase2_vision_pick_p
 
 ---
 
+## Phase 3 — Vision-Language-Action (VLA)
+
+### What it adds
+
+Phase 3 introduces three cubes of different colours (red, blue, yellow) and a language interface. The user types a natural language instruction — "pick the red cube" — and the system identifies, localises, and picks only that cube, leaving the others untouched. All three cubes can be picked in sequence within a single session.
+
+This is the full VLA pattern: **Vision** detects all cubes, **Language** selects the target, **Action** (reach policy) executes the pick.
+
+### Architecture
+
+```
+Session start
+    │
+    ├─ Three cubes spawned in non-overlapping zones
+    ├─ Fixed tray placed at target position
+    │
+    For each pick:
+    │
+    ├─ User types instruction in OpenCV window ("pick the blue cube")
+    ├─ Language parser extracts target colour
+    ├─ Arm retracts to photo pose
+    ├─ YOLOv8n detects all cubes (single class: 'cube')
+    ├─ HSV classifier identifies colour of each detected box
+    ├─ Target cube position locked from matching detection
+    ├─ Arm returns to home, reach policy executes pick and place
+    ├─ Arm returns to home, waits for next instruction
+    └─ Session ends when all three cubes are placed
+```
+
+### Why single-class YOLO + HSV classifier
+
+YOLO is trained on cube shape only (nc=1). Colour classification is handled separately by an OpenCV HSV classifier on the bounding box crop. This means adding a new colour requires no YOLO retraining — only a new HSV hue range.
+
+### VLA YOLO Training Results
+
+| Metric | Value |
+|--------|-------|
+| Model | YOLOv8n (fine-tuned) |
+| Training data | 800 frames, 3 cubes per frame (2400 instances) |
+| Epochs to convergence | 19 of 50 |
+| mAP50 | 0.995 |
+| mAP50-95 | 0.858 |
+| Precision | 1.0 |
+| Recall | 1.0 |
+
+### Modular Code Structure
+
+```
+environment/
+└── pick_place_scripted_env_vla.py   ← orchestrator (~200 lines)
+
+scripts/vla/
+├── run_vla.py                       ← session entry point
+├── generate_training_data_vla.py    ← synthetic data generation
+├── train_yolo_vla.py                ← YOLO training
+└── modules/
+    ├── vision.py                    ← YOLO detection, HSV classifier, pixel-to-world
+    ├── spawner.py                   ← grid-based cube spawning
+    └── stages.py                    ← 6-stage pick and place loop
+```
+
+### Phase 3 Demo
+
+https://github.com/nihalseth0506/project_frank/assets/frank_phase3_vla_pick_place.mp4
+
+---
+
 ## Getting Started
 
 **Requirements:**
@@ -169,27 +255,37 @@ Extract to `models/mujoco_menagerie-main/`
 python scripts/train_reach_panda.py
 ```
 
-**Generate YOLO training data:**
+**Generate Phase 2 YOLO training data:**
 ```bash
 python scripts/generate_training_data.py
 ```
 
-**Train YOLO detector:**
+**Train Phase 2 YOLO detector:**
 ```bash
 python scripts/train_yolo.py
 ```
 
-**Run Phase 1 pick and place (ground truth):**
+**Generate Phase 3 VLA YOLO training data:**
+```bash
+python scripts/vla/generate_training_data_vla.py
+```
+
+**Train Phase 3 VLA YOLO detector:**
+```bash
+python scripts/vla/train_yolo_vla.py
+```
+
+**Run Phase 1 pick and place:**
 ```bash
 python scripts/run_pick_place_scripted.py --episodes 10
 python scripts/run_pick_place_scripted.py --episodes 10 --no-render
 ```
 
-**Run Phase 2 pick and place (vision):**
+**Run Phase 3 VLA session:**
 ```bash
-python scripts/run_pick_place_scripted.py --episodes 10
+python scripts/vla/run_vla.py
 ```
-Phase 2 is the default — YOLO detection runs automatically if the model exists.
+The OpenCV window opens — adjust the MuJoCo viewer angle, press any key, then type colour instructions to pick each cube.
 
 ---
 
@@ -197,39 +293,32 @@ Phase 2 is the default — YOLO detection runs automatically if the model exists
 
 - Custom Gymnasium environment from scratch with curriculum learning
 - PPO training with Stable-Baselines3 — hyperparameter tuning, reward shaping, callback design
-- Debugging RL-specific failures — entropy collapse, reward hacking, curriculum distribution mismatch
+- Debugging RL-specific failures — entropy collapse, reward hacking, curriculum distribution mismatch, orientation reward instability
 - MuJoCo physics engine — direct API usage, contact dynamics, actuator tuning
 - Multi-stage scripted + policy hybrid control pipeline
-- Synthetic dataset generation — 1000 auto-labelled frames from simulation
+- Synthetic dataset generation — auto-labelled frames from simulation, no manual annotation
 - YOLOv8 fine-tuning on synthetic data — mAP50 0.995, 0.2mm localization accuracy
+- HSV colour classification — separates colour identification from shape detection
 - Pixel-to-world coordinate transform via perspective projection
+- Vision-Language-Action architecture — modular perception, language parsing, and policy execution
 - Observation normalization with synchronized checkpoint saving
-
----
-
-## What's Next — Phase 3
-
-Phase 3 will introduce multi-object scenes and language-directed picking:
-- Multiple cubes of different colours on the table
-- Language instruction: "pick the red cube" / "place the blue cube in the tray"
-- YOLO trained with one class per colour
-- Language model parses instruction → selects target detection by class
-- Same reach policy executes the motion unchanged
-
-This is the Vision-Language-Action (VLA) pattern — vision detects, language selects, policy acts.
+- Modular software design — vision, spawning, and stage logic separated into independent modules
 
 ---
 
 ## Dependencies
 
 ```
-mujoco>=3.0.0
-stable-baselines3>=2.0.0
-gymnasium>=0.29.0
-ultralytics>=8.0.0
-numpy>=1.24.0
-torch>=2.0.0
-opencv-python>=4.8.0
+mujoco>=3.9.0
+stable-baselines3>=2.8.0
+gymnasium>=1.2.3
+ultralytics>=8.4.41
+numpy>=2.2.6
+torch>=2.5.1
+opencv-python>=4.13.0
+
+# PyTorch — install CUDA version manually for GPU support:
+# pip install torch>=2.5.1 --index-url https://download.pytorch.org/whl/cu121
 ```
 
 ---
